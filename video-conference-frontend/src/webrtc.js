@@ -30,7 +30,8 @@ let params = {
 // CONNECT SOCKET
 // =========================================================
 export function connectSocket() {
-  socket = io("http://192.168.1.104:3001");
+ socket = io("http://192.168.1.104:3001");
+
 
   socket.on("connect", () => {
     console.log("Connected:", socket.id);
