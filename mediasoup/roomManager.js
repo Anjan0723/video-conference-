@@ -25,25 +25,27 @@ async function createRoom(roomId, worker) {
     router,
     peers: new Map(),
 
+    // -------------------------------
     addPeer(id, name) {
       const peer = {
         id,
         name,
-        transports: [],
+        sendTransport: null,
+        recvTransport: null,
         producers: [],
         consumers: []
       };
+
       this.peers.set(id, peer);
       return peer;
     },
 
     getPeerList() {
-      return Array.from(this.peers.values()).map(p => ({
-        id: p.id,
-        name: p.name
-      }));
+      return [...this.peers.values()].map(p => ({ id: p.id, name: p.name }));
     },
 
+    // -------------------------------
+    // SEND TRANSPORT
     async createSendTransport(peerId) {
       const transport = await this.router.createWebRtcTransport({
         listenIps: [{ ip: "0.0.0.0", announcedIp: null }],
@@ -52,7 +54,7 @@ async function createRoom(roomId, worker) {
         preferUdp: true
       });
 
-      this.peers.get(peerId).transports.push(transport);
+      this.peers.get(peerId).sendTransport = transport;
 
       return {
         transport,
@@ -66,20 +68,23 @@ async function createRoom(roomId, worker) {
     },
 
     async connectSendTransport(peerId, dtlsParameters) {
-      const transport = this.peers.get(peerId).transports[0];
-      await transport.connect({ dtlsParameters });
+      const peer = this.peers.get(peerId);
+      await peer.sendTransport.connect({ dtlsParameters });
     },
 
     async produce(peerId, kind, rtpParameters) {
-      const transport = this.peers.get(peerId).transports[0];
+      const peer = this.peers.get(peerId);
+      const producer = await peer.sendTransport.produce({
+        kind,
+        rtpParameters
+      });
 
-      const producer = await transport.produce({ kind, rtpParameters });
-
-      this.peers.get(peerId).producers.push(producer);
-
+      peer.producers.push(producer);
       return producer.id;
     },
 
+    // -------------------------------
+    // RECEIVE TRANSPORT
     async createRecvTransport(peerId) {
       const transport = await this.router.createWebRtcTransport({
         listenIps: [{ ip: "0.0.0.0", announcedIp: null }],
@@ -88,7 +93,7 @@ async function createRoom(roomId, worker) {
         preferUdp: true
       });
 
-      this.peers.get(peerId).transports.push(transport);
+      this.peers.get(peerId).recvTransport = transport;
 
       return {
         transport,
@@ -102,34 +107,34 @@ async function createRoom(roomId, worker) {
     },
 
     async connectRecvTransport(peerId, dtlsParameters) {
-      const transports = this.peers.get(peerId).transports;
-      const transport = transports[transports.length - 1];
-      await transport.connect({ dtlsParameters });
+      const peer = this.peers.get(peerId);
+      await peer.recvTransport.connect({ dtlsParameters });
     },
 
+    // -------------------------------
+    // CONSUMER
     async consume(peerId, producerId, rtpCapabilities) {
-      const transport = this.peers.get(peerId).transports.slice(-1)[0];
+      const peer = this.peers.get(peerId);
 
-      const consumer = await transport.consume({
+      const consumer = await peer.recvTransport.consume({
         producerId,
         rtpCapabilities,
         paused: true
       });
 
-      this.peers.get(peerId).consumers.push(consumer);
-
+      peer.consumers.push(consumer);
       return consumer;
     },
 
     async resumeConsumer(peerId, consumerId) {
       const peer = this.peers.get(peerId);
       const consumer = peer.consumers.find(c => c.id === consumerId);
-      await consumer.resume();
+
+      if (consumer) await consumer.resume();
     }
   };
 
   rooms.set(roomId, room);
-
   return room;
 }
 

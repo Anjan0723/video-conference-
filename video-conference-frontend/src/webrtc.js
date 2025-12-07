@@ -14,12 +14,16 @@ export const ICE_SERVERS = [
 let socket;
 let device;
 
+// GLOBAL TRANSPORTS
+let sendTransport = null;
+let recvTransport = null;
+
 let params = {
   roomId: null,
   name: null
 };
 
-// Store peer connections and streams
+// Store peer streams
 export const peers = {};
 export let localStream = null;
 
@@ -27,7 +31,7 @@ export let localStream = null;
 // CONNECT SOCKET
 // ------------------------------------
 export function connectSocket() {
-  socket = io("http://localhost:3001");
+  socket = io("http://192.168.1.104:3001");
 
   socket.on("connect", () => {
     console.log("Connected:", socket.id);
@@ -47,7 +51,11 @@ export async function joinRoom(roomId, name, onNewStream) {
     socket.emit("joinRoom", { roomId, name }, async (data) => {
       console.log("Joined Room:", data);
 
+      // Load mediasoup device
       await loadDevice(data.rtpCapabilities);
+
+      // Create a single recv transport immediately
+      recvTransport = await createRecvTransport();
 
       resolve(data.peers);
 
@@ -56,7 +64,7 @@ export async function joinRoom(roomId, name, onNewStream) {
         console.log("New Peer Joined:", peer);
       });
 
-      // When new producer is available
+      // When a producer is created by any user
       socket.on("newProducer", async ({ producerId, peerId }) => {
         console.log("New Producer:", producerId);
         await consumePeer(producerId, peerId, onNewStream);
@@ -74,14 +82,14 @@ async function loadDevice(routerRtpCapabilities) {
   } catch (err) {
     if (err.name === "UnsupportedError") {
       console.error("Browser not supported for MediaSoup");
+      return;
     }
   }
-
   await device.load({ routerRtpCapabilities });
 }
 
 // ------------------------------------
-// PRODUCE (SEND AUDIO/VIDEO)
+// START SENDING MEDIA
 // ------------------------------------
 export async function startProducing() {
   console.log("Starting local stream…");
@@ -91,16 +99,16 @@ export async function startProducing() {
     audio: true
   });
 
-  // SEND TRANSPORT
-  const sendTransport = await createSendTransport();
+  // Create send transport once
+  sendTransport = await createSendTransport();
 
-  // Produce VIDEO
+  // Send VIDEO
   const videoTrack = localStream.getVideoTracks()[0];
   if (videoTrack) {
     await sendTransport.produce({ track: videoTrack });
   }
 
-  // Produce AUDIO
+  // Send AUDIO
   const audioTrack = localStream.getAudioTracks()[0];
   if (audioTrack) {
     await sendTransport.produce({ track: audioTrack });
@@ -110,14 +118,14 @@ export async function startProducing() {
 }
 
 // ------------------------------------
-// CREATE SEND TRANSPORT
+// CREATE SEND TRANSPORT (ONE TIME)
 // ------------------------------------
 async function createSendTransport() {
   return new Promise((resolve) => {
     socket.emit("createSendTransport", { roomId: params.roomId }, async (transportOptions) => {
-      const transport = device.createSendTransport(transportOptions);
+      sendTransport = device.createSendTransport(transportOptions);
 
-      transport.on("connect", async ({ dtlsParameters }, callback) => {
+      sendTransport.on("connect", ({ dtlsParameters }, callback) => {
         socket.emit("connectSendTransport", {
           roomId: params.roomId,
           dtlsParameters
@@ -125,34 +133,28 @@ async function createSendTransport() {
         callback();
       });
 
-      transport.on("produce", async ({ kind, rtpParameters }, callback) => {
+      sendTransport.on("produce", ({ kind, rtpParameters }, callback) => {
         socket.emit(
           "produce",
-          {
-            roomId: params.roomId,
-            kind,
-            rtpParameters
-          },
-          ({ id }) => {
-            callback({ id });
-          }
+          { roomId: params.roomId, kind, rtpParameters },
+          ({ id }) => callback({ id })
         );
       });
 
-      resolve(transport);
+      resolve(sendTransport);
     });
   });
 }
 
 // ------------------------------------
-// CREATE RECEIVE TRANSPORT
+// CREATE RECV TRANSPORT (ONE TIME)
 // ------------------------------------
 async function createRecvTransport() {
   return new Promise((resolve) => {
-    socket.emit("createRecvTransport", { roomId: params.roomId }, (transportOptions) => {
-      const transport = device.createRecvTransport(transportOptions);
+    socket.emit("createRecvTransport", { roomId: params.roomId }, async (transportOptions) => {
+      recvTransport = device.createRecvTransport(transportOptions);
 
-      transport.on("connect", ({ dtlsParameters }, callback) => {
+      recvTransport.on("connect", ({ dtlsParameters }, callback) => {
         socket.emit("connectRecvTransport", {
           roomId: params.roomId,
           dtlsParameters
@@ -160,7 +162,7 @@ async function createRecvTransport() {
         callback();
       });
 
-      resolve(transport);
+      resolve(recvTransport);
     });
   });
 }
@@ -169,8 +171,6 @@ async function createRecvTransport() {
 // CONSUME A PRODUCER
 // ------------------------------------
 async function consumePeer(producerId, peerId, onNewStream) {
-  const recvTransport = await createRecvTransport();
-
   socket.emit(
     "consume",
     {
@@ -178,24 +178,28 @@ async function consumePeer(producerId, peerId, onNewStream) {
       producerId,
       rtpCapabilities: device.rtpCapabilities
     },
-    async (result) => {
-      if (result.error) {
-        return console.error("Consume error:", result.error);
+    async (response) => {
+      if (response.error) {
+        console.error("Consume error:", response.error);
+        return;
       }
 
+      console.log("Consuming Producer →", producerId);
+
       const consumer = await recvTransport.consume({
-        id: result.id,
-        producerId: result.producerId,
-        kind: result.kind,
-        rtpParameters: result.rtpParameters
+        id: response.id,
+        producerId: response.producerId,
+        kind: response.kind,
+        rtpParameters: response.rtpParameters
       });
 
-      const stream = new MediaStream();
-      stream.addTrack(consumer.track);
+      const stream = new MediaStream([consumer.track]);
 
-      // Add video/audio to UI
+      console.log("STREAM RECEIVED FOR PEER:", peerId);
+
       onNewStream(peerId, stream);
 
+      // Resume the consumer so video starts
       socket.emit("resumeConsumer", {
         roomId: params.roomId,
         consumerId: consumer.id
