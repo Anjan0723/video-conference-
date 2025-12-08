@@ -1,7 +1,6 @@
+// src/App.jsx  ← REPLACE YOUR ENTIRE FILE WITH THIS
 import React, { useState, useEffect, useRef } from "react";
-import {
-  Video, VideoOff, Mic, MicOff, PhoneOff, Users, Copy, Check
-} from "lucide-react";
+import { Video, VideoOff, Mic, MicOff, PhoneOff, Users, Copy, Check } from "lucide-react";
 
 import VideoTile from "./components/VideoTile";
 import { connectSocket, joinRoom, startProducing, socket } from "./webrtc";
@@ -19,12 +18,20 @@ export default function App() {
   const localStreamRef = useRef(null);
   const isHostRef = useRef(false);
 
-  // Connect socket once
   useEffect(() => {
     connectSocket();
+
+    socket?.on("newPeer", ({ id, name, isHost }) => {
+      console.log("New peer joined:", name, id);
+      setParticipants((prev) => {
+        if (prev.some(p => p.id === id)) return prev;
+        return [...prev, { id, name, isHost, stream: null }];
+      });
+    });
+
+    return () => socket?.off("newPeer");
   }, []);
 
-  // Start local preview only once
   const startLocalPreview = async () => {
     if (localStreamRef.current) return localStreamRef.current;
 
@@ -36,55 +43,51 @@ export default function App() {
       localStreamRef.current = stream;
       return stream;
     } catch (err) {
-      alert("Camera/Mic permission denied");
+      alert("Camera/Microphone access denied");
       return null;
     }
   };
 
   const createRoom = () => {
-    const newId = Math.random().toString(36).substring(2, 9).toUpperCase();
-    setRoomId(newId);
+    setRoomId(Math.random().toString(36).substring(2, 9).toUpperCase());
     setCurrentView("lobby");
   };
 
   const goToLobby = () => {
-    if (!roomId.trim()) return alert("Enter Meeting ID");
+    if (!roomId.trim()) return alert("Please enter a Meeting ID");
     setCurrentView("lobby");
   };
 
   const enterRoom = async () => {
-    if (!userName.trim()) return alert("Enter your name");
+    if (!userName.trim()) return alert("Please enter your name");
 
     const previewStream = await startLocalPreview();
     if (!previewStream) return;
 
-    const existingPeers = await joinRoom(roomId, userName, (peerId, stream) => {
-      setParticipants((prev) => {
-        const filtered = prev.filter((p) => p.id !== peerId);
-        const existing = prev.find((p) => p.id === peerId);
-
-        return [
-          ...filtered,
-          { id: peerId, name: existing?.name || "User", isHost: existing?.isHost, stream }
-        ];
-      });
+    const { peers, isHost } = await joinRoom(roomId, userName, (peerId, stream) => {
+      // This callback runs when a remote peer's video/audio arrives
+      setParticipants((prev) =>
+        prev.map((p) =>
+          p.id === peerId ? { ...p, stream } : p
+        )
+      );
     });
 
-    isHostRef.current = existingPeers.length === 0;
+    isHostRef.current = isHost;
 
+    // Add all existing peers (without stream yet — will come via callback)
     setParticipants(
-      existingPeers
+      peers
         .filter((p) => p.id !== socket.id)
         .map((p) => ({
           id: p.id,
           name: p.name,
           isHost: p.isHost,
-          stream: null
+          stream: null,
         }))
     );
 
-    await startProducing(previewStream);
-
+    await startProducing(previewStream, roomId);
     setCurrentView("room");
   };
 
@@ -115,125 +118,138 @@ export default function App() {
   const copyRoomId = () => {
     navigator.clipboard.writeText(roomId);
     setCopied(true);
-    setTimeout(() => setCopied(false), 1200);
+    setTimeout(() => setCopied(false), 1500);
   };
 
-  // ---------------- HOME ----------------
+  // ====================== RENDER ======================
+
   if (currentView === "home") {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
-        <div className="bg-gray-800 p-8 rounded-3xl shadow-xl w-full max-w-md">
+        <div className="bg-gray-800 p-10 rounded-3xl shadow-2xl max-w-md w-full">
+          <h1 className="text-3xl font-bold text-white mb-8 text-center">Video Conference</h1>
 
           <button
             onClick={createRoom}
-            className="w-full bg-indigo-600 text-white py-4 rounded-xl mb-4 text-lg"
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-xl text-lg font-medium mb-6 transition"
           >
-            Create Meeting
+            Create New Meeting
           </button>
 
-          <input
-            className="w-full p-3 bg-gray-700 text-white rounded-xl mb-4 text-center"
-            value={roomId}
-            onChange={(e) => setRoomId(e.target.value.toUpperCase())}
-            placeholder="Enter Meeting ID"
-          />
+          <div className="relative">
+            <input
+              className="w-full p-4 bg-gray-700 text-white rounded-xl text-center text-lg"
+              placeholder="Enter Meeting ID"
+              value={roomId}
+              onChange={(e) => setRoomId(e.target.value.toUpperCase())}
+            />
+          </div>
 
           <button
             onClick={goToLobby}
-            className="w-full bg-gray-600 text-white py-3 rounded-xl"
+            className="w-full bg-gray-600 hover:bg-gray-700 text-white py-4 rounded-xl text-lg font-medium mt-6 transition"
           >
-            Join
+            Join Meeting
           </button>
         </div>
       </div>
     );
   }
 
-  // ---------------- LOBBY ----------------
   if (currentView === "lobby") {
     return (
-      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
-        <div className="bg-gray-800 p-8 rounded-3xl shadow-xl w-full max-w-lg">
-
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
+        <div className="bg-gray-800 rounded-3xl p-8 max-w-lg w-full">
           <VideoTile peerId="local" name="You" stream={localStreamRef.current} />
 
           <input
-            className="w-full p-3 bg-gray-700 text-white rounded-xl my-4"
+            className="w-full p-4 bg-gray-700 text-white rounded-xl mt-6 text-center"
             placeholder="Your Name"
             value={userName}
             onChange={(e) => setUserName(e.target.value)}
           />
 
-          <div className="flex justify-between bg-gray-700 p-4 rounded-xl mb-4 text-white">
+          <div className="bg-gray-700 rounded-xl p-5 mt-6 flex justify-between items-center">
             <div>
-              <div className="text-sm text-gray-400">Meeting ID</div>
-              <div className="text-xl font-bold">{roomId}</div>
+              <p className="text-gray-400 text-sm">Meeting ID</p>
+              <p className="text-xl font-bold">{roomId}</p>
             </div>
-            <button onClick={copyRoomId}>
+            <button onClick={copyRoomId} className="p-3 bg-gray-600 rounded-lg">
               {copied ? <Check className="text-green-400" /> : <Copy />}
             </button>
           </div>
 
           <button
             onClick={enterRoom}
-            className="w-full bg-indigo-600 text-white py-4 rounded-xl mt-2"
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-xl mt-6 text-lg font-medium transition"
           >
-            Join Meeting
+            Join Now
           </button>
-
         </div>
       </div>
     );
   }
 
+  // ====================== ROOM VIEW ======================
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col">
-
-      <div className="p-4 bg-gray-800 flex justify-between">
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-          Live • Meeting ID: {roomId}
+      {/* Header */}
+      <div className="bg-gray-800 px-6 py-4 flex justify-between items-center">
+        <div className="flex items-center gap-3">
+          <span className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
+          <span className="font-medium">Live • Meeting ID: {roomId}</span>
         </div>
-
-        <div className="flex items-center gap-1 text-gray-400">
-          <Users size={16} /> {participants.length + 1}
+        <div className="flex items-center gap-2 text-gray-400">
+          <Users size={18} />
+          <span>{participants.length + 1} participants</span>
         </div>
       </div>
 
-      <div
-        className="grid gap-4 p-4 flex-1"
-        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}
-      >
-        <VideoTile
-          peerId="local"
-          name={`${userName}${isHostRef.current ? " (Host)" : ""}`}
-          stream={localStreamRef.current}
-        />
-
-        {participants.map((p) => (
+      {/* Video Grid */}
+      <div className="flex-1 p-6 overflow-y-auto">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 auto-rows-fr">
+          {/* Local Video */}
           <VideoTile
-            key={p.id}
-            peerId={p.id}
-            name={`${p.name}${p.isHost ? " (Host)" : ""}`}
-            stream={p.stream}
+            peerId="local"
+            name={`${userName} ${isHostRef.current ? "(Host)" : "(You)"}`}
+            stream={localStreamRef.current}
           />
-        ))}
+
+          {/* Remote Participants */}
+          {participants.map((p) => (
+            <VideoTile
+              key={p.id}                    // ← ONLY p.id — no streamKey anymore!
+              peerId={p.id}
+              name={`${p.name}${p.isHost ? " (Host)" : ""}`}
+              stream={p.stream}
+            />
+          ))}
+        </div>
       </div>
 
-      <div className="p-4 bg-gray-800 flex justify-center gap-4">
-        <button onClick={toggleAudio} className="p-3 bg-gray-700 rounded-xl">
-          {isAudioEnabled ? <Mic /> : <MicOff className="text-red-500" />}
+      {/* Controls */}
+      <div className="bg-gray-800 p-5 flex justify-center gap-6">
+        <button
+          onClick={toggleAudio}
+          className="p-4 rounded-full bg-gray-700 hover:bg-gray-600 transition"
+        >
+          {isAudioEnabled ? <Mic size={24} /> : <MicOff size={24} className="text-red-500" />}
         </button>
 
-        <button onClick={toggleVideo} className="p-3 bg-gray-700 rounded-xl">
-          {isVideoEnabled ? <Video /> : <VideoOff className="text-red-500" />}
+        <button
+          onClick={toggleVideo}
+          className="p-4 rounded-full bg-gray-700 hover:bg-gray-600 transition"
+        >
+          {isVideoEnabled ? <Video size={24} /> : <VideoOff size={24} className="text-red-500" />}
         </button>
 
-        <button onClick={leaveRoom} className="p-3 bg-red-600 rounded-xl">
-          <PhoneOff />
+        <button
+          onClick={leaveRoom}
+          className="p-4 rounded-full bg-red-600 hover:bg-red-700 transition"
+        >
+          <PhoneOff size={24} />
         </button>
       </div>
-
     </div>
   );
 }

@@ -1,21 +1,17 @@
+// node_modules/roomManager.js or wherever on server
 const mediasoup = require("mediasoup");
 
 const rooms = new Map();
 
 async function createRoom(roomId, worker) {
   const mediaCodecs = [
-    {
-      kind: "audio",
-      mimeType: "audio/opus",
-      clockRate: 48000,
-      channels: 2
-    },
+    { kind: "audio", mimeType: "audio/opus", clockRate: 48000, channels: 2 },
     {
       kind: "video",
       mimeType: "video/VP8",
       clockRate: 90000,
-      parameters: { "x-google-start-bitrate": 1000 }
-    }
+      parameters: { "x-google-start-bitrate": 1500 },
+    },
   ];
 
   const router = await worker.createRouter({ mediaCodecs });
@@ -25,101 +21,107 @@ async function createRoom(roomId, worker) {
     router,
     peers: new Map(),
 
-    // -------------------------------
     addPeer(id, name) {
       const peer = {
         id,
         name,
+        isHost: false,
         sendTransport: null,
         recvTransport: null,
-        producers: [],
-        consumers: []
+        producers: [], // {id, kind}
+        consumers: [],
       };
 
       this.peers.set(id, peer);
       return peer;
     },
 
+    // -------------------------------
+    // FIXED PEER LIST FORMAT
+    // -------------------------------
     getPeerList() {
-      return [...this.peers.values()].map(p => ({ id: p.id, name: p.name }));
+      return [...this.peers.values()].map((p) => ({
+        id: p.id,
+        name: p.name,
+        isHost: p.isHost,
+
+        videoProducers: p.producers
+          .filter((prod) => prod.kind === "video")
+          .map((prod) => prod.id),
+
+        audioProducers: p.producers
+          .filter((prod) => prod.kind === "audio")
+          .map((prod) => prod.id),
+      }));
     },
 
     // -------------------------------
-    // SEND TRANSPORT
     async createSendTransport(peerId) {
-      const transport = await this.router.createWebRtcTransport({
-        listenIps: [{ ip: "0.0.0.0", announcedIp: null }],
-        enableUdp: true,
-        enableTcp: true,
-        preferUdp: true
-      });
+  const transport = await this.router.createWebRtcTransport({
+    listenIps: [{ ip: "0.0.0.0", announcedIp: null }],
+    enableUdp: true,
+    enableTcp: true,
+    preferUdp: true,
+  });
 
-      this.peers.get(peerId).sendTransport = transport;
+  this.peers.get(peerId).sendTransport = transport;
 
-      return {
-        transport,
-        params: {
-          id: transport.id,
-          iceParameters: transport.iceParameters,
-          iceCandidates: transport.iceCandidates,
-          dtlsParameters: transport.dtlsParameters
-        }
-      };
-    },
+  return {
+    id: transport.id,
+    iceParameters: transport.iceParameters,
+    iceCandidates: transport.iceCandidates,
+    dtlsParameters: transport.dtlsParameters,
+  };
+},
+
 
     async connectSendTransport(peerId, dtlsParameters) {
-      const peer = this.peers.get(peerId);
-      await peer.sendTransport.connect({ dtlsParameters });
+      await this.peers.get(peerId).sendTransport.connect({ dtlsParameters });
     },
 
     async produce(peerId, kind, rtpParameters) {
       const peer = this.peers.get(peerId);
+
       const producer = await peer.sendTransport.produce({
         kind,
-        rtpParameters
+        rtpParameters,
       });
 
-      peer.producers.push(producer);
+      peer.producers.push({ id: producer.id, kind });
+
       return producer.id;
     },
 
     // -------------------------------
-    // RECEIVE TRANSPORT
-    async createRecvTransport(peerId) {
-      const transport = await this.router.createWebRtcTransport({
-        listenIps: [{ ip: "0.0.0.0", announcedIp: null }],
-        enableUdp: true,
-        enableTcp: true,
-        preferUdp: true
-      });
+async createRecvTransport(peerId) {
+  const transport = await this.router.createWebRtcTransport({
+    listenIps: [{ ip: "0.0.0.0", announcedIp: null }],
+    enableUdp: true,
+    enableTcp: true,
+    preferUdp: true,
+  });
 
-      this.peers.get(peerId).recvTransport = transport;
+  this.peers.get(peerId).recvTransport = transport;
 
-      return {
-        transport,
-        params: {
-          id: transport.id,
-          iceParameters: transport.iceParameters,
-          iceCandidates: transport.iceCandidates,
-          dtlsParameters: transport.dtlsParameters
-        }
-      };
-    },
+  return {
+    id: transport.id,
+    iceParameters: transport.iceParameters,
+    iceCandidates: transport.iceCandidates,
+    dtlsParameters: transport.dtlsParameters,
+  };
+},
 
     async connectRecvTransport(peerId, dtlsParameters) {
-      const peer = this.peers.get(peerId);
-      await peer.recvTransport.connect({ dtlsParameters });
+      await this.peers.get(peerId).recvTransport.connect({ dtlsParameters });
     },
 
-    // -------------------------------
-    // CONSUMER
     async consume(peerId, producerId, rtpCapabilities) {
       const peer = this.peers.get(peerId);
 
       const consumer = await peer.recvTransport.consume({
         producerId,
         rtpCapabilities,
-        paused: true
+        paused: true,
       });
 
       peer.consumers.push(consumer);
@@ -128,10 +130,10 @@ async function createRoom(roomId, worker) {
 
     async resumeConsumer(peerId, consumerId) {
       const peer = this.peers.get(peerId);
-      const consumer = peer.consumers.find(c => c.id === consumerId);
+      const consumer = peer.consumers.find((c) => c.id === consumerId);
 
       if (consumer) await consumer.resume();
-    }
+    },
   };
 
   rooms.set(roomId, room);
