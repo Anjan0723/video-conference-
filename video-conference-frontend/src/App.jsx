@@ -10,39 +10,37 @@ export default function App() {
   const [currentView, setCurrentView] = useState("home");
   const [roomId, setRoomId] = useState("");
   const [userName, setUserName] = useState("");
-  const [participants, setParticipants] = useState([]);
 
+  const [participants, setParticipants] = useState([]);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [copied, setCopied] = useState(false);
 
   const localStreamRef = useRef(null);
+  const isHostRef = useRef(false);
 
   // Connect socket once
   useEffect(() => {
     connectSocket();
   }, []);
 
-  // Start Local Camera Preview
+  // Start local preview only once
   const startLocalPreview = async () => {
-    try {
-      if (localStreamRef.current) return localStreamRef.current;
+    if (localStreamRef.current) return localStreamRef.current;
 
+    try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true,
       });
-
       localStreamRef.current = stream;
       return stream;
     } catch (err) {
-      console.error("Camera error:", err);
       alert("Camera/Mic permission denied");
       return null;
     }
   };
 
-  // Home Actions
   const createRoom = () => {
     const newId = Math.random().toString(36).substring(2, 9).toUpperCase();
     setRoomId(newId);
@@ -54,35 +52,42 @@ export default function App() {
     setCurrentView("lobby");
   };
 
-  // JOIN ROOM
   const enterRoom = async () => {
     if (!userName.trim()) return alert("Enter your name");
 
-    await startLocalPreview();
+    const previewStream = await startLocalPreview();
+    if (!previewStream) return;
 
-    // Join room
     const existingPeers = await joinRoom(roomId, userName, (peerId, stream) => {
-      console.log("STREAM RECEIVED FOR:", peerId);
-
       setParticipants((prev) => {
         const filtered = prev.filter((p) => p.id !== peerId);
-        return [...filtered, { id: peerId, name: `User ${peerId}`, stream }];
+        const existing = prev.find((p) => p.id === peerId);
+
+        return [
+          ...filtered,
+          { id: peerId, name: existing?.name || "User", isHost: existing?.isHost, stream }
+        ];
       });
     });
 
-    // ❗ FIX: Remove your own ID from participants
-    const filteredPeers = existingPeers.filter((p) => p.id !== socket.id);
+    isHostRef.current = existingPeers.length === 0;
 
-    setParticipants(filteredPeers.map((p) => ({ ...p, stream: null })));
+    setParticipants(
+      existingPeers
+        .filter((p) => p.id !== socket.id)
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          isHost: p.isHost,
+          stream: null
+        }))
+    );
 
-    // Start producing your own video/audio
-    const localStream = await startProducing();
-    localStreamRef.current = localStream;
+    await startProducing(previewStream);
 
     setCurrentView("room");
   };
 
-  // AUDIO / VIDEO CONTROLS
   const toggleAudio = () => {
     const track = localStreamRef.current?.getAudioTracks()[0];
     if (track) {
@@ -113,15 +118,12 @@ export default function App() {
     setTimeout(() => setCopied(false), 1200);
   };
 
-  // ==========================================================
-  // ======================= VIEWS ============================
-  // ==========================================================
-
-  // HOME VIEW
+  // ---------------- HOME ----------------
   if (currentView === "home") {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
         <div className="bg-gray-800 p-8 rounded-3xl shadow-xl w-full max-w-md">
+
           <button
             onClick={createRoom}
             className="w-full bg-indigo-600 text-white py-4 rounded-xl mb-4 text-lg"
@@ -147,7 +149,7 @@ export default function App() {
     );
   }
 
-  // LOBBY VIEW
+  // ---------------- LOBBY ----------------
   if (currentView === "lobby") {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
@@ -178,16 +180,15 @@ export default function App() {
           >
             Join Meeting
           </button>
+
         </div>
       </div>
     );
   }
 
-  // ROOM VIEW
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col">
 
-      {/* HEADER */}
       <div className="p-4 bg-gray-800 flex justify-between">
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
@@ -199,14 +200,13 @@ export default function App() {
         </div>
       </div>
 
-      {/* VIDEO GRID */}
       <div
         className="grid gap-4 p-4 flex-1"
         style={{ gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}
       >
         <VideoTile
           peerId="local"
-          name="You"
+          name={`${userName}${isHostRef.current ? " (Host)" : ""}`}
           stream={localStreamRef.current}
         />
 
@@ -214,13 +214,12 @@ export default function App() {
           <VideoTile
             key={p.id}
             peerId={p.id}
-            name={p.name}
+            name={`${p.name}${p.isHost ? " (Host)" : ""}`}
             stream={p.stream}
           />
         ))}
       </div>
 
-      {/* CONTROLS */}
       <div className="p-4 bg-gray-800 flex justify-center gap-4">
         <button onClick={toggleAudio} className="p-3 bg-gray-700 rounded-xl">
           {isAudioEnabled ? <Mic /> : <MicOff className="text-red-500" />}
@@ -234,6 +233,7 @@ export default function App() {
           <PhoneOff />
         </button>
       </div>
+
     </div>
   );
 }
